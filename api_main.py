@@ -12,8 +12,9 @@ import numpy as np, joblib, json, os
 from sqlalchemy import create_engine
 import pandas as pd
 
+# Connection string comes from the environment; never commit real credentials.
 engine = create_engine(
-    "postgresql://postgres:Niranjan%402004@localhost:5432/diabetes_db"
+    os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/diabetes_db")
 )
 
 BASE = os.path.dirname(os.path.abspath(__file__))
