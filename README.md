@@ -1,170 +1,104 @@
-# 🏥 End-to-End Disease Prediction System
+# Disease Prediction System
 
-> **Key Metric:** XGBoost achieves **AUC-ROC 0.8376** on the Pima Indians Diabetes dataset, with **LightGBM reaching 0.9407 F1-Score** — representing an 8–12% improvement in clinical recall over Logistic Regression baseline.
+A diabetes-risk prediction pipeline taken from data to a served model: feature engineering, four models compared on a held-out split, SHAP explanations for the chosen model, a FastAPI prediction endpoint that logs to PostgreSQL, and a Streamlit front end.
 
----
+> **About the data.** The 2,000 patient records are **synthetic**. `pipeline.py` generates them with the same eight features as the Pima Indians Diabetes dataset and a logistic risk function, so the numbers below describe how the pipeline behaves, not clinical performance. This is a learning project and not a medical tool.
 
-## 📋 Project Overview
+## What it does
 
-A production-grade machine learning system for **diabetes risk prediction** built on the Pima Indians Diabetes dataset. Covers the full data science lifecycle: SQL ingestion → EDA → Feature Engineering → Multi-model training → SHAP explainability → REST API → Interactive dashboards.
+| Stage | File | Detail |
+|---|---|---|
+| Data generation and EDA | `pipeline.py` | Generates the dataset, plots distributions, correlations and class balance |
+| Feature engineering | `pipeline.py` | Median imputation of physiologically impossible zeros, plus seven engineered features |
+| Training and evaluation | `pipeline.py` | Logistic Regression, Random Forest, XGBoost and LightGBM on a stratified 80/20 split |
+| Explainability | `pipeline.py` | SHAP `TreeExplainer` on XGBoost: importance bar, beeswarm and a single-patient waterfall |
+| Serving | `api_main.py` | FastAPI `POST /predict`, `GET /metrics`, `GET /health`; each prediction is written to PostgreSQL |
+| Interface | `streamlit_app.py` | Five pages: prediction form, EDA, model comparison, SHAP plots, API reference |
+| Data layer | `sql_schema.sql` | Tables for patients, features, predictions and model metrics, with analytical queries |
 
-```
-disease_prediction/
-├── src/pipeline.py          # Full ML pipeline (EDA → models → SHAP)
-├── api/main.py              # FastAPI REST API
-├── streamlit_app.py         # Streamlit interactive frontend
-├── sql_schema.sql           # PostgreSQL schema + analytical queries
-├── models/
-│   ├── xgboost_model.pkl    # Trained XGBoost model
-│   ├── scaler.pkl           # StandardScaler
-│   ├── feature_cols.pkl     # Feature list
-│   └── metrics.json         # All model metrics
-├── data/patients.csv        # Patient records
-├── plots/                   # 9 EDA + model + SHAP plots
-└── requirements.txt
-```
-
----
-
-## 🗄️ SQL — Data Layer (PostgreSQL)
-
-**Tables:** `patients`, `patient_features`, `predictions`, `model_metrics`
-
-```sql
--- Diabetes prevalence by age group
-SELECT age_group,
-       ROUND(100.0 * SUM(outcome) / COUNT(*), 2) AS prevalence_pct
-FROM patients
-GROUP BY age_group ORDER BY age_group;
-
--- Model leaderboard
-SELECT model_name, auc_roc, f1_score,
-       RANK() OVER (ORDER BY auc_roc DESC) AS rank
-FROM model_metrics;
-```
-
-Connect to **Power BI** via PostgreSQL connector → import `patients` + `predictions` tables → build risk distribution, prevalence by age, and feature importance visuals.
-
----
-
-## 🔬 EDA Findings
-
-| Finding | Detail |
-|---|---|
-| Class imbalance | ~35% diabetic, 65% non-diabetic |
-| Missing data | Insulin: 48.9% zeros, SkinThickness: 29.5% zeros |
-| Top correlations | Glucose↔Outcome (0.51), BMI↔Outcome (0.31), Age↔Outcome (0.24) |
-| Key outliers | Insulin up to 846, Glucose up to 199 |
-
-**Imputation strategy:** Replace physiologically impossible zeros with column median.
-
----
-
-## ⚙️ Feature Engineering
+## Engineered features
 
 | Feature | Formula | Rationale |
 |---|---|---|
-| `Glucose_BMI` | Glucose × BMI / 1000 | Combined metabolic burden |
-| `Glucose_Age` | Glucose × Age / 1000 | Age-adjusted glucose risk |
-| `Insulin_Gluc` | Insulin / (Glucose + 1) | Insulin resistance proxy |
+| `Glucose_BMI` | Glucose × BMI / 1000 | Combined metabolic load |
+| `Glucose_Age` | Glucose × Age / 1000 | Age-adjusted glucose |
+| `Insulin_Gluc` | Insulin / (Glucose + 1) | Insulin-resistance proxy |
+| `BMI_Age` | BMI × Age / 100 | Age-adjusted BMI |
 | `BMI_Obese` | BMI ≥ 30 | Clinical obesity threshold |
 | `HighGlucose` | Glucose ≥ 140 | Pre-diabetic threshold |
-| `Risk_Score` | Weighted flag sum | Composite risk index |
+| `Risk_Score` | Weighted sum of four flags | Composite index |
 
----
+## Results
 
-## 🤖 Model Results
+Held-out test split of 400 records, from `models/metrics.json`:
 
-| Model | AUC-ROC | F1-Score | Accuracy | Precision | Recall |
+| Model | AUC-ROC | F1 | Accuracy | Precision | Recall |
 |---|---|---|---|---|---|
-| **XGBoost** | **0.8376** | 0.9229 | 0.8650 | 0.9259 | 0.9200 |
-| Logistic Regression | 0.8366 | 0.8383 | 0.7425 | 0.8098 | 0.8681 |
-| Random Forest | 0.8315 | 0.9333 | 0.8800 | 0.9420 | 0.9249 |
-| LightGBM | 0.8164 | **0.9407** | **0.8925** | 0.9481 | 0.9333 |
+| Logistic Regression | 0.8366 | 0.8383 | 0.7425 | 0.9639 | 0.7417 |
+| XGBoost (served) | 0.8339 | 0.9200 | 0.8600 | 0.9471 | 0.8944 |
+| Random Forest | 0.8315 | 0.9333 | 0.8800 | 0.9333 | 0.9333 |
+| LightGBM | 0.8164 | 0.9407 | 0.8925 | 0.9342 | 0.9472 |
 
-**Best for clinical use (AUC):** XGBoost | **Best F1:** LightGBM
+How to read this:
 
----
+- The generated dataset is about 90% positive, so F1, precision and recall are inflated by the class balance. A model that predicts "diabetic" for everyone would already score an F1 near 0.95. AUC-ROC is the more informative column.
+- On AUC-ROC the four models are within 0.02 of each other, and logistic regression is marginally ahead. The tree models do not show a meaningful advantage on this data.
 
-## 🔍 SHAP Explainability — Top Feature Drivers
+![ROC and precision-recall curves for all four models](plots/04_roc_pr.png)
 
-1. **Glucose** — single largest contributor (high values strongly push toward diabetes)
-2. **BMI** — obese patients show consistent SHAP uplift
-3. **Age** — monotonic increase in risk contribution after 40
-4. **DiabetesPedigreeFunction** — family history adds non-linear risk
-5. **Glucose_BMI interaction** — combined effect amplifies individual signals
+## Explainability
 
----
+SHAP values are computed for the XGBoost model on the test split. Glucose and BMI dominate, which matches the risk function used to generate the data.
 
-## 🚀 FastAPI Deployment
+![SHAP beeswarm plot showing feature impact direction and magnitude](plots/08_shap_beeswarm.png)
+
+The API's `top_risk_factors` field uses fixed clinical thresholds (glucose above 140, BMI above 30 and so on). It does not compute SHAP values per request.
+
+## Run it
 
 ```bash
 pip install -r requirements.txt
-uvicorn api.main:app --reload --port 8000
-# Docs: http://localhost:8000/docs
 ```
 
-**Endpoints:**
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/predict` | Diabetes risk prediction |
-| `GET` | `/metrics` | All model metrics |
-| `GET` | `/health` | API health check |
+Regenerate the data, plots and models (optional, the trained artefacts are committed):
 
 ```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"Pregnancies":3,"Glucose":148,"BloodPressure":72,
-       "SkinThickness":35,"Insulin":0,"BMI":33.6,
-       "DiabetesPedigreeFunction":0.627,"Age":50}'
+python pipeline.py
 ```
 
----
+Start the API. It needs a reachable PostgreSQL database for prediction logging:
 
-## 📊 Power BI Dashboard
+```bash
+export DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/diabetes_db"
+uvicorn api_main:app --reload --port 8000
+```
 
-Connect PostgreSQL → Import `patients`, `predictions`, `model_metrics` →
+```bash
+curl -X POST http://localhost:8000/predict -H "Content-Type: application/json" -d '{"Pregnancies":3,"Glucose":148,"BloodPressure":72,"SkinThickness":35,"Insulin":0,"BMI":33.6,"DiabetesPedigreeFunction":0.627,"Age":50}'
+```
 
-- **Card visuals:** Total patients, AUC-ROC, Diabetic %, High-risk count
-- **Donut chart:** Risk level distribution (HIGH / MEDIUM / LOW)
-- **Bar chart:** Prevalence by age group
-- **Scatter plot:** Glucose vs BMI colored by outcome
-- **Table:** Model leaderboard ranked by AUC-ROC
-- **Line chart:** Prediction probability distribution
-
----
-
-## 🌐 Streamlit Deployment (Hugging Face Spaces)
+Start the Streamlit app:
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-**Deploy to Hugging Face Spaces:**
-1. Create new Space → SDK: Streamlit
-2. Push this repo
-3. Add `requirements.txt` with all deps
+| Variable | Used by | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `api_main.py` | PostgreSQL connection string for the `predictions` table |
 
----
+## Power BI
 
-## 📦 Requirements
+The `predictions` and `patients` tables can be loaded into Power BI through its PostgreSQL connector for risk-distribution and prevalence reports. No `.pbix` file is included in this repository.
 
-```
-pandas>=2.0  numpy>=1.24  scikit-learn>=1.3  xgboost>=2.0
-lightgbm>=4.0  shap>=0.44  matplotlib>=3.7  seaborn>=0.12
-fastapi>=0.104  uvicorn>=0.24  streamlit>=1.28  joblib>=1.3
-imbalanced-learn>=0.11  pydantic>=2.0  psycopg2-binary>=2.9
-```
+## Limitations and next steps
 
----
+- Replace the synthetic data with the real Pima dataset (768 records) or a larger clinical dataset, and report cross-validated results.
+- Rebalance the generated classes, or evaluate with balanced accuracy and calibration.
+- Return per-request SHAP contributions from `/predict` in place of threshold rules.
+- `sql_schema.sql` contains MySQL-style statements (`USE`, `CREATE DATABASE IF NOT EXISTS`) and needs adjusting to run unmodified on PostgreSQL.
+- There are no automated tests yet.
 
-## 📁 Data Source
+## Stack
 
-**Pima Indians Diabetes Database** — originally from the National Institute of Diabetes and Digestive and Kidney Diseases. 768 female patients aged 21+, Pima Indian heritage.
-
-Features: Pregnancies, Glucose, BloodPressure, SkinThickness, Insulin, BMI, DiabetesPedigreeFunction, Age → binary Outcome (0/1).
-
----
-
-*Built with Python · XGBoost · FastAPI · Streamlit · PostgreSQL · Power BI*
+Python · scikit-learn · XGBoost · LightGBM · SHAP · FastAPI · Streamlit · PostgreSQL
